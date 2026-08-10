@@ -229,6 +229,55 @@ python -m daniovision_pipeline.cli \
 (`--plate-layout` defaults to `config/plate_layout_24well.csv`; pass your
 own if you edited a copy instead.)
 
+## Analyzing protocol periods (light/dark, acoustic startle, ...)
+
+Add `--periods /path/to/periods.csv` to either mode above to additionally
+break the analysis down by named time-windows within the trial -- e.g. a
+light phase followed by a dark phase. This is a plain time filter (start_s
+to end_s, from the start of the trial) applied before the exact same
+metrics/stats/plots pipeline used for the whole trial, so it works
+identically regardless of input mode, calibration, or mobility threshold --
+nothing period-specific needs to know about any of that (see `periods.py`).
+The whole-trial output always runs too; periods are additional, not a
+replacement.
+
+Copy `config/periods_template.csv` and edit it, e.g. for a 10-minute light
+phase followed by a 40-minute dark phase (already provided as
+`config/periods_light10_dark40.csv`):
+
+```csv
+period,start_s,end_s
+light,0,600
+dark,600,3000
+```
+
+```bash
+python -m daniovision_pipeline.cli \
+  --trk-dir /path/to/trk_folder \
+  --groups /path/to/your_groups.csv \
+  --outdir /path/to/results \
+  --periods config/periods_light10_dark40.csv
+```
+
+Each period gets its own subfolder, with the same files as the top-level
+output: `<outdir>/periods/<period_name>/{per_well_metrics,group_summary,
+group_comparisons}.csv` and `<outdir>/periods/<period_name>/plots/`. The
+mobility threshold (if auto-computed) is resolved once from the *whole*
+trial and reused for every period, so mobile/immobile fractions stay
+comparable across periods instead of each period silently getting its own
+cutoff.
+
+On the real 24-well plate this surfaced a textbook larval zebrafish
+dark-flash response in the `dark` period's `activity_over_time.png`: a burst
+of activity right at lights-off that decays over the next ~15-20 minutes,
+visible in both groups.
+
+For repeated brief-stimulus protocols (e.g. acoustic startle pulses), list
+several short windows under the same period name to pool them --
+distance/velocity/thigmotaxis pool correctly across the disjoint windows,
+but see `periods.py`'s module docstring for a caveat on bout metrics
+(`mobile_bout_count` etc.) in that specific case.
+
 ### Try it on synthetic demo data first
 
 To see the expected input/output shape without real data:
@@ -276,16 +325,19 @@ uncalibrated `--trk-dir`. Below, `<unit>` stands for whichever applies.
 config/
   plate_layout_24well.csv   # arena_index -> well_id (edit if your grid order differs)
   groups_template.csv       # well_id -> group (copy and fill in per experiment)
+  periods_template.csv      # period,start_s,end_s (copy and edit per protocol)
+  periods_light10_dark40.csv  # ready-made: 10 min light + 40 min dark
 daniovision_pipeline/
   well_mapping.py           # filename -> arena -> well -> group resolution
   ethovision_trk.py         # reads .trk/.btn files directly: info / convert / calibrate / validate / compare
   trk_loader.py             # .trk/.btn -> tidy DataFrame for the metrics pipeline (pixel or calibrated mm)
   raw_export_parser.py      # reads EthoVision "Raw data" CSV/Excel exports -> the same tidy DataFrame shape
   trk_probe.py              # minimal .trk sanity check predating ethovision_trk.py
+  periods.py                # named time-windows -> track slicing, for --periods
   metrics.py                # per-well metric computation, unit-agnostic (mm or px, see glossary above)
   stats.py                  # group summaries + between-group tests
   plots.py                  # boxplots and activity-over-time plots
-  cli.py                    # `python -m daniovision_pipeline.cli --trk-dir ... | --raw-dir ...`
+  cli.py                    # `python -m daniovision_pipeline.cli --trk-dir ... | --raw-dir ... [--periods ...]`
 example_data/
   generate_example_data.py  # writes synthetic demo raw-data CSVs
 ```

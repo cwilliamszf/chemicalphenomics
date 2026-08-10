@@ -8,6 +8,9 @@ Two input modes, pick one:
            present -- see ethovision_trk.py and the README for why). No
            EthoVision export needed. Positions are uncalibrated pixels
            unless you pass --scale (from `ethovision_trk.py calibrate`).
+
+Optional --periods: analyze one or more named protocol time-windows (e.g.
+light/dark) separately, in addition to the whole trial -- see periods.py.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import pandas as pd
 from . import metrics as metrics_mod
 from . import plots as plots_mod
 from . import stats as stats_mod
+from .periods import load_periods, slice_to_period
 from .raw_export_parser import load_raw_track
 from .trk_loader import load_trk_track
 from .well_mapping import PlateLayout, build_file_well_group_table, load_groups, parse_arena_index_from_filename
@@ -66,6 +70,38 @@ def find_trk_files(trk_dir: Path) -> list[Path]:
     return chosen
 
 
+def analyze(
+    tracks_by_well: dict[str, pd.DataFrame],
+    well_group: dict[str, str],
+    cfg: metrics_mod.MetricsConfig,
+    outdir: Path,
+) -> None:
+    """Metrics -> per-well table -> group stats -> plots, for one set of tracks.
+
+    Shared by the whole-trial run and each --periods window: a period is
+    just a different (smaller) tracks_by_well, everything downstream of
+    slicing is identical.
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+    summary_df, binned_df = metrics_mod.compute_all_wells(tracks_by_well, well_group, cfg)
+    summary_df.to_csv(outdir / "per_well_metrics.csv", index=False)
+    binned_df.to_csv(outdir / "per_well_time_binned_activity.csv", index=False)
+    print(f"Wrote per-well metrics -> {outdir / 'per_well_metrics.csv'}")
+
+    group_summary_df = stats_mod.group_summary(summary_df)
+    group_summary_df.to_csv(outdir / "group_summary.csv", index=False)
+
+    comparisons_df = stats_mod.compare_groups(summary_df)
+    comparisons_df.to_csv(outdir / "group_comparisons.csv", index=False)
+    print(f"Wrote group summary and comparisons -> {outdir}")
+
+    plot_dir = outdir / "plots"
+    plots_mod.plot_all_metric_boxplots(summary_df, plot_dir)
+    if not binned_df.empty:
+        plots_mod.plot_binned_activity(binned_df, plot_dir / "activity_over_time.png")
+    print(f"Wrote plots -> {plot_dir}")
+
+
 def run(
     raw_dir: Path | None,
     trk_dir: Path | None,
@@ -79,6 +115,7 @@ def run(
     mobility_threshold: str | None = "auto",
     mobility_percentile: float = 25.0,
     mobility_smoothing_window_s: float = 0.5,
+    periods_csv: Path | None = None,
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -141,23 +178,20 @@ def run(
     if run_info_lines:
         (outdir / "run_info.txt").write_text("\n".join(run_info_lines) + "\n")
 
-    summary_df, binned_df = metrics_mod.compute_all_wells(tracks_by_well, well_group, cfg)
-    summary_df.to_csv(outdir / "per_well_metrics.csv", index=False)
-    binned_df.to_csv(outdir / "per_well_time_binned_activity.csv", index=False)
-    print(f"Wrote per-well metrics -> {outdir / 'per_well_metrics.csv'}")
+    print("--- whole trial ---")
+    analyze(tracks_by_well, well_group, cfg, outdir)
 
-    group_summary_df = stats_mod.group_summary(summary_df)
-    group_summary_df.to_csv(outdir / "group_summary.csv", index=False)
-
-    comparisons_df = stats_mod.compare_groups(summary_df)
-    comparisons_df.to_csv(outdir / "group_comparisons.csv", index=False)
-    print(f"Wrote group summary and comparisons -> {outdir}")
-
-    plot_dir = outdir / "plots"
-    plots_mod.plot_all_metric_boxplots(summary_df, plot_dir)
-    if not binned_df.empty:
-        plots_mod.plot_binned_activity(binned_df, plot_dir / "activity_over_time.png")
-    print(f"Wrote plots -> {plot_dir}")
+    if periods_csv is not None:
+        periods = load_periods(periods_csv)
+        for period in periods:
+            print(f"--- period: {period.name} ({period.intervals}) ---")
+            period_tracks = {
+                well: slice_to_period(track, period) for well, track in tracks_by_well.items()
+            }
+            empty_wells = [w for w, t in period_tracks.items() if t.empty]
+            if empty_wells:
+                print(f"  WARNING: no frames in this period for well(s): {', '.join(empty_wells)}")
+            analyze(period_tracks, well_group, cfg, outdir / "periods" / period.name)
 
 
 def main() -> None:
@@ -198,10 +232,19 @@ def main() -> None:
     parser.add_argument("--mobility-smoothing-window-s", type=float, default=0.5,
                          help="Rolling-mean window (seconds) applied to velocity before "
                               "thresholding for mobility, to suppress frame-level detector jitter")
+    parser.add_argument(
+        "--periods", type=Path, default=None,
+        help="Optional CSV of named protocol time-windows (period,start_s,end_s -- see "
+             "config/periods_template.csv) to additionally analyze separately, e.g. light/dark "
+             "phases. Each period gets its own subfolder under <outdir>/periods/<name>/ with "
+             "the same per_well_metrics.csv / group_summary.csv / group_comparisons.csv / plots "
+             "as the whole-trial output. The whole-trial analysis always runs regardless."
+    )
     args = parser.parse_args()
     run(args.raw_dir, args.trk_dir, args.plate_layout, args.groups, args.outdir,
         args.bin_size_s, args.scale, args.x0, args.y0,
-        args.mobility_threshold, args.mobility_percentile, args.mobility_smoothing_window_s)
+        args.mobility_threshold, args.mobility_percentile, args.mobility_smoothing_window_s,
+        args.periods)
 
 
 if __name__ == "__main__":
