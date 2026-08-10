@@ -15,11 +15,21 @@ try:
 except ImportError:  # pragma: no cover - statsmodels is an optional dependency
     _HAVE_STATSMODELS = False
 
-NON_METRIC_COLUMNS = {"well_id", "group"}
+NON_METRIC_COLUMNS = {"well_id", "group", "plate_id", "date"}
 
 
 def metric_columns(summary_df: pd.DataFrame) -> list[str]:
-    return [c for c in summary_df.columns if c not in NON_METRIC_COLUMNS]
+    """Numeric, non-identifier columns -- i.e. actual metrics.
+
+    Filtering by dtype (not just the NON_METRIC_COLUMNS name list) means a
+    new identifier/provenance column added later (e.g. aggregate.py's
+    plate_id, date) can't accidentally get treated as a metric and crash
+    group_summary/compare_groups trying to convert it to float.
+    """
+    return [
+        c for c in summary_df.columns
+        if c not in NON_METRIC_COLUMNS and pd.api.types.is_numeric_dtype(summary_df[c])
+    ]
 
 
 def group_summary(summary_df: pd.DataFrame) -> pd.DataFrame:

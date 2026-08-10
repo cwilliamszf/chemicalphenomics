@@ -354,6 +354,74 @@ This data is entirely fabricated (5 wells, 2 groups, a light/dark split) --
 it is **not** derived from the real `.trk` files, only used to exercise the
 parser/metrics/stats/plots code end to end.
 
+## Aggregating wells of the same condition across plates/days
+
+Each plate/day still runs through `cli.py` completely independently first --
+own well -> group resolution, own metrics, own QC, own output folder. Once
+you have two or more of those, `aggregate_cli.py` combines their *already-
+computed* outputs (not the raw `.trk`/export files) into pooled group
+comparisons and a pooled activity-over-time trace, so "group" pools wells
+across plates instead of being scoped to one plate at a time.
+
+```bash
+# 1. Run each plate/day exactly as normal, own --outdir each:
+python -m daniovision_pipeline.cli --trk-dir /data/day1 --groups groups_day1.csv --outdir results_day1 --periods config/periods_light10_startle5_dark35.csv
+python -m daniovision_pipeline.cli --trk-dir /data/day2 --groups groups_day2.csv --outdir results_day2 --periods config/periods_light10_startle5_dark35.csv
+
+# 2. List them in a manifest (see config/plates_manifest_template.csv):
+#    plate_id,outdir,date
+#    plate1,results_day1,2026-07-28
+#    plate2,results_day2,2026-08-04
+
+# 3. Aggregate:
+python -m daniovision_pipeline.aggregate_cli --manifest plates_manifest.csv --outdir aggregated_results
+```
+
+`group` labels have to match exactly across plates to pool ("control" on
+day 1 and "Control" on day 2 will *not* merge -- they'll show up as two
+separate groups in the aggregate, which is a visible, correctable mistake
+rather than a silent one). Everything else -- which wells belong to which
+group, plate layout, periods -- is still decided independently per plate
+via its own `cli.py` run; the manifest only points at already-finished
+output folders.
+
+**What you get, at `--outdir`:**
+
+- `aggregated_per_well_metrics.csv` -- every plate's `per_well_metrics.csv`
+  stacked together, tagged with `plate_id`/`date` columns.
+- `aggregated_group_summary.csv` / `aggregated_group_comparisons.csv` --
+  the same `stats.py` functions cli.py uses, run on the pooled table (N
+  now spans every plate contributing to that group).
+- `plots/` -- the same per-metric boxplots and `activity_over_time.svg`
+  (with period boundary markers, same as a single plate) as cli.py
+  produces, but pooling every well from every plate.
+- `plots/by_plate/` and `plots/activity_over_time_by_plate.svg` --
+  **the batch-effect check.** Same plots, but each group is split out by
+  plate (and sorted chronologically if you gave dates), so you can see
+  plate-to-plate spread *within* a group before trusting the pooled
+  numbers above. Tight clustering across plates means pooling is
+  reasonable; a plate that's a clear outlier within its own group is worth
+  investigating (or excluding) rather than silently averaged in.
+- If any plate used `--periods`, period names are auto-discovered from
+  each plate's own `periods/<name>/` output folders (no need to pass
+  `--periods` to the aggregator for this -- only pass it if you also want
+  boundary markers drawn on the pooled *whole-trial* activity plot) and
+  the same set of files above is produced under
+  `<outdir>/periods/<name>/`. A plate missing a given period (e.g. it used
+  a different protocol) is simply excluded from that period's aggregate,
+  with a note printed saying which plate and why.
+
+**The one thing to get right yourself:** if any plate used uncalibrated
+`.trk`/`.btn` pixel units (no `--scale`), pixel counts are only comparable
+across plates if every plate was recorded with the *identical* camera
+position/zoom/resolution. `aggregate_cli.py` checks for this and prints/
+writes a warning to `aggregate_run_info.txt` -- either that plates mix
+pixel and calibrated-mm units outright (not comparable, fix before
+trusting anything), or, if everything is pixels, a reminder that this only
+holds if the rig genuinely didn't move between recording days. If there's
+any doubt, calibrate every plate to physical units first
+(`ethovision_trk.py calibrate` + `cli.py --scale`).
+
 ## Output
 
 Written to `--outdir`:
@@ -390,6 +458,7 @@ config/
   periods_template.csv      # period,start_s,end_s (copy and edit per protocol)
   periods_light10_startle5_dark35.csv  # ready-made: this plate's protocol (light/startle/dark)
   periods_light10_dark40.csv  # ready-made: simpler 2-phase light/dark-only example
+  plates_manifest_template.csv  # plate_id,outdir[,date] for aggregate_cli.py
 daniovision_pipeline/
   well_mapping.py           # filename -> arena -> well -> group resolution
   ethovision_trk.py         # reads .trk/.btn files directly: info / convert / calibrate / validate / compare
@@ -401,6 +470,8 @@ daniovision_pipeline/
   stats.py                  # group summaries + between-group tests
   plots.py                  # boxplots and activity-over-time plots
   cli.py                    # `python -m daniovision_pipeline.cli --trk-dir ... | --raw-dir ... [--periods ...]`
+  aggregate.py               # combines multiple plates' already-computed outputs (see manifest above)
+  aggregate_cli.py           # `python -m daniovision_pipeline.aggregate_cli --manifest ... --outdir ...`
   gui_app.py                # `streamlit run daniovision_pipeline/gui_app.py` -- thin UI shell around cli.py
 example_data/
   generate_example_data.py  # writes synthetic demo raw-data CSVs

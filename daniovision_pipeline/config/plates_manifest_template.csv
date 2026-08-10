@@ -1,0 +1,3 @@
+plate_id,outdir,date
+plate1,/path/to/results_day1,2026-07-28
+plate2,/path/to/results_day2,2026-08-04
