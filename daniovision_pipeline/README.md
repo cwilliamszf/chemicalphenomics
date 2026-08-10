@@ -189,10 +189,24 @@ python -m daniovision_pipeline.cli \
 Positions stay in raw pixels (metrics come out as `total_distance_px` etc.)
 unless you pass `--scale <cm_per_px> --x0 <cm> --y0 <cm>` from
 `ethovision_trk.py calibrate` against a reference export, in which case
-you'll get `total_distance_mm` etc. instead. `mobility_state`-derived
-metrics (`pct_time_mobile`, bout counts) aren't available in this mode --
-see `trk_loader.py`'s docstring for why -- distance/velocity/thigmotaxis are
-unaffected.
+you'll get `total_distance_mm` etc. instead.
+
+There's no EthoVision Movement classification in the `.trk`/`.btn` record
+schema (see `trk_loader.py`'s docstring for why), so `pct_time_mobile` and
+the bout metrics come from a velocity threshold instead by default
+(`--mobility-threshold auto`, the default): smooth each well's velocity over
+`--mobility-smoothing-window-s` (default 0.5s -- raw frame-to-frame velocity
+is too noisy to threshold directly, it produces thousands of 1-4-frame
+flicker "bouts"), pool the smoothed velocity across every well in the run,
+and use its `--mobility-percentile` (default 25, i.e. bottom quartile of
+speed = immobile) as a single threshold applied to all wells. The resolved
+threshold is printed and written to `run_info.txt` in the output folder.
+**This is a heuristic speed cutoff, not a recovered EthoVision setting** --
+sanity check `pct_time_mobile`/bout counts against a couple of videos, and
+override with `--mobility-threshold <value>` (a specific px/s or mm/s
+number) if the default doesn't match what you see. Pass
+`--mobility-threshold none` to leave these metrics blank instead (the old
+behavior). Distance/velocity/thigmotaxis are unaffected either way.
 
 **B. EthoVision's own "Raw data" export:**
 
@@ -251,8 +265,8 @@ from `--raw-dir` (or a calibrated `--trk-dir`), `_px`/`_pxs` from an
 uncalibrated `--trk-dir`. Below, `<unit>` stands for whichever applies.
 
 - `total_distance_<unit>`, `mean_velocity_<unit>s`, `max_velocity_<unit>s` -- overall movement.
-- `pct_time_mobile` / `pct_time_immobile` -- fraction of time above/below EthoVision's movement threshold (immobile time is commonly used as a freezing proxy). **`--raw-dir` only** -- not available from `.trk`/`.btn` files, which don't carry EthoVision's Movement classification (see `trk_loader.py`).
-- `mobile_bout_count`, `mean_mobile_bout_duration_s`, `mean_immobile_bout_duration_s` -- bout structure of movement. Same `--raw-dir`-only caveat.
+- `pct_time_mobile` / `pct_time_immobile` -- fraction of time above/below a movement threshold (immobile time is commonly used as a freezing proxy). From `--raw-dir`: EthoVision's own Movement classification. From `--trk-dir`: this pipeline's own smoothed-velocity threshold (`--mobility-threshold`, see above) -- same concept, different (heuristic) source; check `run_info.txt` in the output folder for which one and what threshold was used.
+- `mobile_bout_count`, `mean_mobile_bout_duration_s`, `mean_immobile_bout_duration_s` -- bout structure of movement, from whichever mobility source applies (same as above).
 - `pct_time_in_outer_zone`, `pct_distance_in_outer_zone` -- thigmotaxis: time/distance spent beyond `outer_zone_fraction` (default 45%) of the well radius from center. By default the well center/radius are estimated from each track's own extent; pass explicit `well_center_xy`/`well_radius` via `MetricsConfig` for a fixed, calibrated well geometry if you have one.
 - `distance_<unit>__<phase>`, `mean_velocity_<unit>s__<phase>` -- per-phase breakdown (e.g. `__light` / `__dark`) if a light/stimulus state column was exported. **`--raw-dir` only.**
 

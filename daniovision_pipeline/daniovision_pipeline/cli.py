@@ -76,6 +76,9 @@ def run(
     scale: float | None = None,
     x0: float = 0.0,
     y0: float = 0.0,
+    mobility_threshold: str | None = "auto",
+    mobility_percentile: float = 25.0,
+    mobility_smoothing_window_s: float = 0.5,
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -102,7 +105,42 @@ def run(
         tracks_by_well[row["well_id"]] = loader(row["file"])
         well_group[row["well_id"]] = row["group"]
 
-    cfg = metrics_mod.MetricsConfig(bin_size_s=bin_size_s)
+    cfg = metrics_mod.MetricsConfig(bin_size_s=bin_size_s, mobility_smoothing_window_s=mobility_smoothing_window_s)
+
+    run_info_lines = []
+    has_mobility_state = any("mobility_state" in t.columns for t in tracks_by_well.values())
+    if has_mobility_state:
+        run_info_lines.append("mobility source: EthoVision Movement classification (mobility_state column)")
+    elif mobility_threshold is not None and mobility_threshold.lower() not in ("none", "off"):
+        if mobility_threshold.lower() == "auto":
+            threshold = metrics_mod.compute_pooled_mobility_threshold(
+                tracks_by_well, percentile=mobility_percentile, smoothing_window_s=mobility_smoothing_window_s
+            )
+            source_desc = (
+                f"auto: {mobility_percentile:g}th percentile of {mobility_smoothing_window_s:g}s-smoothed "
+                f"velocity, pooled across all {len(tracks_by_well)} wells in this run"
+            )
+        else:
+            threshold = float(mobility_threshold)
+            source_desc = "explicit --mobility-threshold value"
+        cfg.mobility_velocity_threshold = threshold
+        msg = (
+            f"Mobility threshold: {threshold:.4g} (per-second unit matches the run's distance unit) "
+            f"[{source_desc}]. This is a heuristic speed cutoff, NOT EthoVision's own Movement "
+            "classification -- see metrics.py's module docstring. Override with --mobility-threshold "
+            "if pct_time_mobile/bout counts don't match what you see in the video."
+        )
+        print(msg)
+        run_info_lines.append(msg)
+    else:
+        run_info_lines.append(
+            "mobility source: none (no mobility_state column and --mobility-threshold=none) -- "
+            "pct_time_mobile/immobile and bout metrics will be blank"
+        )
+
+    if run_info_lines:
+        (outdir / "run_info.txt").write_text("\n".join(run_info_lines) + "\n")
+
     summary_df, binned_df = metrics_mod.compute_all_wells(tracks_by_well, well_group, cfg)
     summary_df.to_csv(outdir / "per_well_metrics.csv", index=False)
     binned_df.to_csv(outdir / "per_well_time_binned_activity.csv", index=False)
@@ -144,9 +182,26 @@ def main() -> None:
                               "Omit to keep raw pixel units.")
     parser.add_argument("--x0", type=float, default=0.0, help="[--trk-dir only] x offset in cm")
     parser.add_argument("--y0", type=float, default=0.0, help="[--trk-dir only] y offset in cm")
+    parser.add_argument(
+        "--mobility-threshold", type=str, default="auto",
+        help="Only used when there's no EthoVision mobility_state column (i.e. --trk-dir "
+             "without a raw-data export). 'auto' (default): pick the "
+             "--mobility-percentile of pooled smoothed velocity across every well in this "
+             "run. 'none': leave mobility/bout metrics blank. Or a specific number in the "
+             "run's distance unit per second (px/s if uncalibrated, mm/s if --scale given). "
+             "This is a heuristic speed cutoff, not EthoVision's own classification -- see "
+             "metrics.py's docstring."
+    )
+    parser.add_argument("--mobility-percentile", type=float, default=25.0,
+                         help="Percentile of pooled smoothed velocity used as the 'auto' "
+                              "mobility threshold (default: 25, i.e. bottom quartile = immobile)")
+    parser.add_argument("--mobility-smoothing-window-s", type=float, default=0.5,
+                         help="Rolling-mean window (seconds) applied to velocity before "
+                              "thresholding for mobility, to suppress frame-level detector jitter")
     args = parser.parse_args()
     run(args.raw_dir, args.trk_dir, args.plate_layout, args.groups, args.outdir,
-        args.bin_size_s, args.scale, args.x0, args.y0)
+        args.bin_size_s, args.scale, args.x0, args.y0,
+        args.mobility_threshold, args.mobility_percentile, args.mobility_smoothing_window_s)
 
 
 if __name__ == "__main__":

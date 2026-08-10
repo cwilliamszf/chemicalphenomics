@@ -13,6 +13,26 @@ calibrated ethovision_trk.py convert) or raw pixel positions
 ethovision_trk.py convert). Output metric names carry whichever unit the
 input used (e.g. total_distance_mm vs total_distance_px) so pixel-derived
 numbers never get silently mislabeled as physical units.
+
+Mobility/bout metrics (pct_time_mobile, mobile_bout_count, etc.) come from
+one of two sources:
+
+1. An EthoVision-derived `mobility_state` text column (from
+   raw_export_parser.py's export reading) -- EthoVision's own Movement
+   classification, using whatever Detection Settings the project used.
+2. A velocity threshold applied to this module's own frame-to-frame
+   velocity (used automatically when no `mobility_state` column exists,
+   e.g. for .trk/.btn-derived tracks, and `MetricsConfig.mobility_velocity_threshold`
+   is set). This is NOT EthoVision's algorithm -- there's no Movement
+   classification in the .trk/.btn record schema to recover -- it's a
+   straightforward "is smoothed speed above X" rule. Raw frame-to-frame
+   velocity is too noisy to threshold directly (produces thousands of
+   1-4-frame flicker "bouts" from detector jitter); it's smoothed with a
+   rolling mean over `mobility_smoothing_window_s` first. Pick the
+   threshold from the SAME pooled distribution across every well in a run
+   (see compute_pooled_mobility_threshold() below) -- a per-well threshold
+   would adapt away exactly the between-well activity differences you're
+   trying to measure.
 """
 
 from __future__ import annotations
@@ -33,6 +53,8 @@ class MetricsConfig:
     well_center_xy: tuple[float, float] | None = None   # same unit as track positions; None -> use track centroid
     well_radius: float | None = None                    # same unit as track positions; None -> use max observed radius
     outer_zone_fraction: float = 0.45  # fraction of radius considered "outer/edge" (thigmotaxis)
+    mobility_velocity_threshold: float | None = None  # same unit/s as track velocity; None -> no velocity-derived mobility
+    mobility_smoothing_window_s: float = 0.5  # rolling-mean window applied to velocity before thresholding
 
 
 def _length_unit(track: pd.DataFrame) -> str | None:
@@ -51,6 +73,63 @@ def _mobility_bool(series: pd.Series) -> pd.Series:
     out[is_mobile] = True
     out[is_immobile] = False
     return out
+
+
+def _smoothed_velocity(track: pd.DataFrame, unit: str, window_s: float) -> pd.Series:
+    """Rolling-mean velocity, for thresholding rather than reporting."""
+    vel_col = f"velocity_{unit}s"
+    v = track[vel_col]
+    dt = track["time_s"].diff().median()
+    window = max(1, int(round(window_s / dt))) if dt and np.isfinite(dt) and dt > 0 else 1
+    return v.rolling(window, center=True, min_periods=1).mean()
+
+
+def _velocity_mobility_bool(track: pd.DataFrame, unit: str, cfg: MetricsConfig) -> pd.Series | None:
+    vel_col = f"velocity_{unit}s"
+    if cfg.mobility_velocity_threshold is None or vel_col not in track:
+        return None
+    v_smooth = _smoothed_velocity(track, unit, cfg.mobility_smoothing_window_s)
+    out = pd.Series(pd.NA, index=track.index, dtype="object")
+    valid = v_smooth.notna()
+    out[valid] = v_smooth[valid] > cfg.mobility_velocity_threshold
+    return out
+
+
+def compute_pooled_mobility_threshold(
+    tracks_by_well: dict[str, pd.DataFrame],
+    percentile: float = 25.0,
+    smoothing_window_s: float = 0.5,
+) -> float | None:
+    """A single velocity threshold shared across every well in a run.
+
+    Pools smoothed velocity across all wells and returns its `percentile`-th
+    value (default: the bottom quartile of smoothed speed is "immobile").
+    This is a heuristic, not a recovered EthoVision setting -- inspect the
+    resulting pct_time_mobile/bout numbers against a few videos and override
+    with an explicit threshold (MetricsConfig.mobility_velocity_threshold)
+    if it doesn't match what you see. Returns None if no track has a
+    velocity column.
+    """
+    pooled = []
+    units_seen = set()
+    for track in tracks_by_well.values():
+        unit = _length_unit(track)
+        if unit is None:
+            continue
+        vel_col = f"velocity_{unit}s"
+        if vel_col not in track:
+            continue
+        units_seen.add(unit)
+        pooled.append(_smoothed_velocity(track, unit, smoothing_window_s).dropna().to_numpy())
+    if not pooled:
+        return None
+    if len(units_seen) > 1:
+        raise ValueError(
+            f"tracks use mixed length units {units_seen} -- pooling their velocities "
+            "into one threshold would compare pixels to millimeters. All wells in a "
+            "run should come from the same input mode/calibration."
+        )
+    return float(np.percentile(np.concatenate(pooled), percentile))
 
 
 def _bout_stats(mobile_bool: pd.Series, time_s: pd.Series) -> dict[str, float]:
@@ -136,6 +215,12 @@ def compute_well_metrics(track: pd.DataFrame, cfg: MetricsConfig | None = None) 
 
     if "mobility_state" in track:
         mobile_bool = _mobility_bool(track["mobility_state"])
+    elif unit is not None:
+        mobile_bool = _velocity_mobility_bool(track, unit, cfg)
+    else:
+        mobile_bool = None
+
+    if mobile_bool is not None:
         valid = mobile_bool.notna()
         if valid.any():
             out["pct_time_mobile"] = 100.0 * mobile_bool[valid].astype(bool).mean()
