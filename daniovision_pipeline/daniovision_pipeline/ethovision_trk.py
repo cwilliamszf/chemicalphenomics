@@ -90,8 +90,15 @@ EXPECTED_FIELDS = [
 
 TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
+# Matches both raw track filenames (Track_filet0000a0000o0000_0001.trk) and
+# their paired filtered-track counterparts
+# (FilteredTrackFileh0000t0000a0000o0000_0001.btn). The two share the exact
+# same 58-byte-record layout -- see cmd_compare / compare_tracks() below --
+# the filtered file just has every X/Y position run through EthoVision's own
+# track smoothing and gap-filling, still in the same raw pixel space.
 TRACK_NAME_RE = re.compile(
-    r"t(?P<trial>\d+)a(?P<arena>\d+)o(?P<object>\d+)_(?P<seq>\d+)\.trk$", re.I
+    r"(?:h(?P<hist>\d+))?t(?P<trial>\d+)a(?P<arena>\d+)o(?P<object>\d+)_(?P<seq>\d+)\.(?:trk|btn)$",
+    re.I,
 )
 
 
@@ -371,6 +378,62 @@ def validate_against_export(trk: TrkFile, xlsx_path: str, sheet_index: int = 1,
 
 
 # --------------------------------------------------------------------------
+# raw vs. filtered track comparison
+# --------------------------------------------------------------------------
+
+def compare_tracks(raw: TrkFile, filt: TrkFile) -> dict:
+    """Compare a raw Track_file*.trk against its paired FilteredTrackFile*.btn.
+
+    Both files share the identical 58-byte record layout; "filtered" applies
+    EthoVision's own track smoothing to every X/Y sample and fills gaps
+    (frames where MergeState == -1 in both files, since that flag reports
+    the original detection, not whether a position was later filled in) with
+    smoothed values rather than leaving them at -1. Area/ChangedArea/
+    Elongation are per-frame detection properties and pass through unchanged
+    (equal to float rounding noise, ~1e-8) -- large differences there would
+    indicate the two files are not actually a matched pair / are misaligned.
+    """
+    if raw.n_samples != filt.n_samples:
+        raise ValueError(
+            f"sample count mismatch: raw has {raw.n_samples}, filtered has "
+            f"{filt.n_samples} -- these are probably not a matched pair"
+        )
+    rr, fr = raw.records, filt.records
+    ok_raw = rr["merge_state"] != -1
+    ok_filt = fr["merge_state"] != -1
+    both_ok = ok_raw & ok_filt
+
+    area_diff = np.abs(fr["area"][both_ok].astype(float) - rr["area"][both_ok].astype(float))
+    elong_diff = np.abs(fr["elongation"][both_ok].astype(float) - rr["elongation"][both_ok].astype(float))
+
+    dx = fr["x"][both_ok].astype(float) - rr["x"][both_ok].astype(float)
+    dy = fr["y"][both_ok].astype(float) - rr["y"][both_ok].astype(float)
+
+    still_missing = fr["x"][~ok_raw] == -1
+
+    def dist(x, y, ok):
+        x, y = np.where(ok, x, np.nan), np.where(ok, y, np.nan)
+        return float(np.nansum(np.hypot(np.diff(x), np.diff(y))))
+
+    return {
+        "n_samples": raw.n_samples,
+        "merge_state_masks_identical": bool(np.array_equal(ok_raw, ok_filt)),
+        "area_max_abs_diff": float(area_diff.max()) if len(area_diff) else float("nan"),
+        "elongation_max_abs_diff": float(elong_diff.max()) if len(elong_diff) else float("nan"),
+        "position_diff_px": {
+            "dx_mean": float(dx.mean()), "dx_std": float(dx.std()), "dx_max_abs": float(np.abs(dx).max()),
+            "dy_mean": float(dy.mean()), "dy_std": float(dy.std()), "dy_max_abs": float(np.abs(dy).max()),
+        },
+        "raw_missing_frames": int((~ok_raw).sum()),
+        "raw_missing_frames_filled_by_filter": int((~still_missing).sum()),
+        "total_distance_px": {
+            "raw_unsmoothed": dist(rr["x"].astype(float), rr["y"].astype(float), ok_raw),
+            "filtered": dist(fr["x"].astype(float), fr["y"].astype(float), ok_filt),
+        },
+    }
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
@@ -380,8 +443,12 @@ def cmd_info(args):
     print(f"file           {trk.path}")
     m = TRACK_NAME_RE.search(trk.path)
     if m:
+        hist = f", history {int(m['hist'])}" if m["hist"] else ""
         print(f"trial/arena    trial {int(m['trial'])}, arena {int(m['arena'])}, "
-              f"object {int(m['object'])}")
+              f"object {int(m['object'])}{hist}")
+    kind = "filtered" if "filtered" in trk.path.lower() else "raw"
+    print(f"kind           {kind}"
+          + ("" if kind == "raw" else " (smoothed + gap-filled by EthoVision, still uncalibrated pixels)"))
     print(f"start time     {trk.start_time}")
     print(f"samples        {trk.n_samples}")
     print(f"sample rate    {trk.sample_rate} Hz")
@@ -489,6 +556,32 @@ def cmd_validate(args):
         print(f"  {k:24s} {v:.4f}")
 
 
+def cmd_compare(args):
+    raw = read_trk(args.raw)
+    filt = read_trk(args.filtered)
+    rep = compare_tracks(raw, filt)
+    print(f"n_samples                            {rep['n_samples']}")
+    print(f"MergeState missing-frame masks match  {rep['merge_state_masks_identical']}")
+    print(f"raw missing frames                    {rep['raw_missing_frames']}")
+    print(f"  ...filled in by filtered file       {rep['raw_missing_frames_filled_by_filter']}")
+    print(f"Area max abs diff (sanity: ~0 expected)        {rep['area_max_abs_diff']:.2e}")
+    print(f"Elongation max abs diff (sanity: ~0 expected)  {rep['elongation_max_abs_diff']:.2e}")
+    pd = rep["position_diff_px"]
+    print("position diff, filtered - raw, px (where both have a sample)")
+    print(f"  x: mean {pd['dx_mean']:+.4f}  std {pd['dx_std']:.4f}  max|.| {pd['dx_max_abs']:.4f}")
+    print(f"  y: mean {pd['dy_mean']:+.4f}  std {pd['dy_std']:.4f}  max|.| {pd['dy_max_abs']:.4f}")
+    d = rep["total_distance_px"]
+    print("total distance moved, px (uncalibrated, no interpolation/extra smoothing applied here)")
+    print(f"  raw_unsmoothed  {d['raw_unsmoothed']:.2f}")
+    print(f"  filtered        {d['filtered']:.2f}")
+    if rep["area_max_abs_diff"] > 0.01 or rep["elongation_max_abs_diff"] > 0.001:
+        print(
+            "WARNING: Area/Elongation differ more than float rounding noise -- "
+            "these two files may not actually be a matched raw/filtered pair.",
+            file=sys.stderr,
+        )
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -523,6 +616,11 @@ def main(argv=None):
     pv.add_argument("--sheet", type=int, default=1)
     pv.add_argument("--smooth", type=int, default=11)
     pv.set_defaults(func=cmd_validate)
+
+    pp = sub.add_parser("compare", help="compare a raw .trk against its paired FilteredTrackFile*.btn")
+    pp.add_argument("raw", help="Track_file*.trk")
+    pp.add_argument("filtered", help="FilteredTrackFile*.btn")
+    pp.set_defaults(func=cmd_compare)
 
     args = p.parse_args(argv)
     try:

@@ -58,7 +58,43 @@ python daniovision_pipeline/ethovision_trk.py calibrate FILE.trk --export raw_ex
 python daniovision_pipeline/ethovision_trk.py validate  FILE.trk --export raw_export.xlsx --sheet 1
 ```
 
-If you don't have (and can't get) a reference export, `raw_export_parser.py`
+### Better: use the paired `FilteredTrackFile*.btn` if you have it
+
+EthoVision's raw data folder holds a second file per arena/object, named
+like `FilteredTrackFileh0000t0000a0000o0000_0001.btn` next to
+`Track_filet0000a0000o0000_0001.trk`. **It uses the exact same 58-byte
+record layout as the `.trk` file** -- `ethovision_trk.py` reads it with no
+changes -- but every X/Y position has already been run through EthoVision's
+own track smoothing and gap-filling, in the same pixel space. This sidesteps
+caveat 2 above entirely: no approximate `--smooth` needed, no 4.27x
+raw-vs-real discrepancy, and you still don't need an EthoVision export.
+Caveat 1 (no physical scale) still applies -- calibrate as above if you need
+cm.
+
+Confirmed on the sample arena-0 pair in this project with the `compare`
+subcommand:
+
+```bash
+python daniovision_pipeline/ethovision_trk.py compare Track_filet0000a0000o0000_0001.trk FilteredTrackFileh0000t0000a0000o0000_0001.btn
+```
+
+- Area and Elongation (untouched by position smoothing) matched to float
+  rounding noise (~1e-8) -- confirms the two files are a genuine matched
+  pair and the record alignment is correct in both.
+- All 27 raw-missing frames got a filled-in position in the filtered file
+  (their `MergeState` still reads `-1`, so you can still tell they were
+  originally undetected).
+- Every frame's position changed slightly, not just the gaps -- this is a
+  real smoothing pass over the whole trajectory, not a naive gap-fill.
+- Total distance moved dropped from ~75,772 px (raw) to ~28,554 px
+  (filtered) on this file, the same direction and rough magnitude as the
+  4.27x raw/export gap `ethovision_trk.py`'s author found -- consistent
+  with the filtered file being close to what EthoVision itself would report.
+
+If you can pull the `.btn` alongside each well's `.trk`, prefer it as the
+input to `convert` for all downstream metrics.
+
+If you have neither a `.btn` pair nor a reference export, `raw_export_parser.py`
 below still reads EthoVision's own export directly for the metrics pipeline
 -- calibrated, interpolated, and smoothed already, at the cost of needing to
 export every well by hand instead of pointing the pipeline at the raw data
