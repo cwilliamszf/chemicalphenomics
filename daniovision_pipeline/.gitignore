@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+example_data/synthetic_raw/
+example_data/synthetic_output/
+example_data/synthetic_groups.csv
