@@ -4,3 +4,4 @@ scipy>=1.10
 matplotlib>=3.7
 openpyxl>=3.1
 statsmodels>=0.14  # optional: enables Tukey HSD post-hoc tests for >2 groups
+streamlit>=1.30  # only needed for gui_app.py; the CLI (cli.py) doesn't need it

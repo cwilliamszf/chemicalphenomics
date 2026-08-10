@@ -164,6 +164,43 @@ cd daniovision_pipeline
 pip install -r requirements.txt
 ```
 
+## GUI
+
+A local, no-command-line-flags way to run everything below: point it at your
+`.trk`/`.btn` folder, fill in wells/groups and periods as editable tables,
+click Run.
+
+```bash
+streamlit run daniovision_pipeline/gui_app.py
+```
+
+This opens in your browser (must be run on the machine that can see your
+data folder -- it needs local filesystem access, so this has to run on your
+own computer, not a remote/cloud session). It's a thin UI shell around
+`cli.py`: every field maps to a CLI flag, and clicking Run calls the exact
+same `run()` function the CLI uses, so the two are always in sync and there
+are no separate code paths to keep consistent. Everything from here down in
+the README describes the same options and output either interface produces
+-- read it either way, the GUI just fills in the CSVs and flags for you:
+
+- **Data**: choose `.trk`/`.btn` folder or EthoVision raw-data export folder,
+  with a "Browse..." folder picker (falls back to a plain text field if
+  `tkinter` isn't available -- e.g. on Linux you may need
+  `sudo apt install python3-tk`).
+- **Wells & groups**: an editable table (one row per well), plus a "fill all
+  with" shortcut for setting every well to one group before hand-editing the
+  few that differ. Every row must have a group before you can run.
+- **Periods**: an editable table (name, start/end in minutes) pre-filled
+  with this project's light/startle/dark protocol as a starting example --
+  edit or delete rows to match your own, or clear the table for whole-trial-
+  only analysis.
+- **Run**: shows a progress spinner, the same log `cli.py` prints to the
+  terminal, the per-well metrics table, the activity-over-time plot inline,
+  and a button to download every output file as a single .zip.
+
+If you'd rather script it (batch runs, no browser), use the CLI directly --
+same options, see below.
+
 ## Usage
 
 Two input modes -- pick whichever matches what you have:
@@ -364,6 +401,7 @@ daniovision_pipeline/
   stats.py                  # group summaries + between-group tests
   plots.py                  # boxplots and activity-over-time plots
   cli.py                    # `python -m daniovision_pipeline.cli --trk-dir ... | --raw-dir ... [--periods ...]`
+  gui_app.py                # `streamlit run daniovision_pipeline/gui_app.py` -- thin UI shell around cli.py
 example_data/
   generate_example_data.py  # writes synthetic demo raw-data CSVs
 ```
