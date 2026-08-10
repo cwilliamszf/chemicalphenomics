@@ -123,18 +123,39 @@ The `a####` arena index encoded in `.trk` filenames (and often echoed in raw
 data export filenames as "Arena N") reflects the order arenas were drawn in
 that project's Trial Setup grid. **There is no universal public standard for
 this** -- it's specific to how your Trial Setup arena grid was configured.
-The X-pixel-range evidence above is a good way to check your own files: run
-`ethovision_trk.py info` on each arena and confirm the X ranges step through
-in the order you expect for your plate's physical layout (and that Y ranges
-group by row).
 
-`config/plate_layout_24well.csv` ships a row-major default for a 4-row x
-6-column plate (arena 0 = A1, arena 1 = A2, ... arena 5 = A6, arena 6 = B1,
-... arena 23 = D6), because that's how EthoVision's "Track multiple arenas"
-wizard lays out a grid by default. **Verify this against your own Trial
-Setup > Arena Settings screen (or the arena numbers overlaid on the video)
-before trusting results**, and edit the CSV if your grid was drawn in a
-different order (column-major, mirrored, custom).
+For *this* project's plate, it's been directly confirmed from all 24 arenas'
+pixel coordinates (not just assumed): each arena's X/Y-pixel range clusters
+into a clean 6-column x 4-row grid, with arena index increasing left-to-right
+then top-to-bottom --
+
+```
+arena   x range (px)        y range (px)
+  0     24 - 184             84 - 245       row 0
+  1    232 - 393             81 - 245       row 0
+  2    440 - 597             83 - 245       row 0
+  3    647 - 810             83 - 246       row 0
+  4    855 -1017             82 - 244       row 0
+  5   1062 -1223             85 - 249       row 0
+  6     22 - 182            292 - 453       row 1
+  ...                                       (rows 1-3 follow the same pattern)
+ 23   1067 -1231            711 - 874       row 3
+```
+
+i.e. arena_index = row*6 + col, which is exactly the row-major default
+already in `config/plate_layout_24well.csv` (arena 0 = A1, arena 1 = A2,
+... arena 5 = A6, arena 6 = B1, ... arena 23 = D6) -- so no edits needed for
+this plate. This *cannot* tell you the plate's physical orientation, though
+(camera could be mirrored or rotated relative to how you're reading the
+plate by eye) -- confirm arena 0 is really the well you think it is (e.g.
+A1, not A6 or D1) against your Trial Setup > Arena Settings screen or the
+arena numbers overlaid on the video before trusting group assignments.
+
+For a different plate/project, rerun this check yourself: `ethovision_trk.py
+info` each arena and confirm the X ranges step through in the order you
+expect for your plate's physical layout (and that Y ranges group by row),
+then edit `plate_layout_24well.csv` if your grid was drawn in a different
+order (column-major, mirrored, custom).
 
 ## Setup
 
@@ -144,6 +165,36 @@ pip install -r requirements.txt
 ```
 
 ## Usage
+
+Two input modes -- pick whichever matches what you have:
+
+**A. Direct from `.trk`/`.btn` files** (no EthoVision export needed):
+
+1. Put all arenas' files in one folder. Include the paired
+   `FilteredTrackFile*.btn` next to each `Track_file*.trk` when you have it
+   -- the pipeline prefers it automatically (see above for why).
+2. Check/edit `config/plate_layout_24well.csv` if your arena grid wasn't
+   drawn row-major (see above).
+3. Copy `config/groups_template.csv`, fill in a `group` label for every well.
+4. Run:
+
+```bash
+python -m daniovision_pipeline.cli \
+  --trk-dir /path/to/trk_folder \
+  --groups /path/to/your_groups.csv \
+  --outdir /path/to/results \
+  --bin-size-s 60
+```
+
+Positions stay in raw pixels (metrics come out as `total_distance_px` etc.)
+unless you pass `--scale <cm_per_px> --x0 <cm> --y0 <cm>` from
+`ethovision_trk.py calibrate` against a reference export, in which case
+you'll get `total_distance_mm` etc. instead. `mobility_state`-derived
+metrics (`pct_time_mobile`, bout counts) aren't available in this mode --
+see `trk_loader.py`'s docstring for why -- distance/velocity/thigmotaxis are
+unaffected.
+
+**B. EthoVision's own "Raw data" export:**
 
 1. **Export raw data** for all 24 wells from EthoVision into one folder
    (CSV or Excel, one file per well/arena).
@@ -195,11 +246,15 @@ Written to `--outdir`:
 
 ### Metrics glossary
 
-- `total_distance_mm`, `mean_velocity_mms`, `max_velocity_mms` -- overall movement.
-- `pct_time_mobile` / `pct_time_immobile` -- fraction of time above/below EthoVision's movement threshold (immobile time is commonly used as a freezing proxy).
-- `mobile_bout_count`, `mean_mobile_bout_duration_s`, `mean_immobile_bout_duration_s` -- bout structure of movement.
-- `pct_time_in_outer_zone`, `pct_distance_in_outer_zone` -- thigmotaxis: time/distance spent beyond `outer_zone_fraction` (default 45%) of the well radius from center. By default the well center/radius are estimated from each track's own extent; pass explicit `well_center_xy`/`well_radius_mm` via `MetricsConfig` for a fixed, calibrated well geometry if you have one.
-- `distance_mm__<phase>`, `mean_velocity_mms__<phase>` -- per-phase breakdown (e.g. `__light` / `__dark`) if a light/stimulus state column was exported.
+Metric names carry a unit suffix that depends on input mode: `_mm`/`_mms`
+from `--raw-dir` (or a calibrated `--trk-dir`), `_px`/`_pxs` from an
+uncalibrated `--trk-dir`. Below, `<unit>` stands for whichever applies.
+
+- `total_distance_<unit>`, `mean_velocity_<unit>s`, `max_velocity_<unit>s` -- overall movement.
+- `pct_time_mobile` / `pct_time_immobile` -- fraction of time above/below EthoVision's movement threshold (immobile time is commonly used as a freezing proxy). **`--raw-dir` only** -- not available from `.trk`/`.btn` files, which don't carry EthoVision's Movement classification (see `trk_loader.py`).
+- `mobile_bout_count`, `mean_mobile_bout_duration_s`, `mean_immobile_bout_duration_s` -- bout structure of movement. Same `--raw-dir`-only caveat.
+- `pct_time_in_outer_zone`, `pct_distance_in_outer_zone` -- thigmotaxis: time/distance spent beyond `outer_zone_fraction` (default 45%) of the well radius from center. By default the well center/radius are estimated from each track's own extent; pass explicit `well_center_xy`/`well_radius` via `MetricsConfig` for a fixed, calibrated well geometry if you have one.
+- `distance_<unit>__<phase>`, `mean_velocity_<unit>s__<phase>` -- per-phase breakdown (e.g. `__light` / `__dark`) if a light/stimulus state column was exported. **`--raw-dir` only.**
 
 ## Layout
 
@@ -209,13 +264,14 @@ config/
   groups_template.csv       # well_id -> group (copy and fill in per experiment)
 daniovision_pipeline/
   well_mapping.py           # filename -> arena -> well -> group resolution
-  ethovision_trk.py         # reads .trk files directly: info / convert / calibrate / validate
-  raw_export_parser.py      # reads EthoVision "Raw data" CSV/Excel exports
+  ethovision_trk.py         # reads .trk/.btn files directly: info / convert / calibrate / validate / compare
+  trk_loader.py             # .trk/.btn -> tidy DataFrame for the metrics pipeline (pixel or calibrated mm)
+  raw_export_parser.py      # reads EthoVision "Raw data" CSV/Excel exports -> the same tidy DataFrame shape
   trk_probe.py              # minimal .trk sanity check predating ethovision_trk.py
-  metrics.py                # per-well metric computation (consumes raw_export_parser output)
+  metrics.py                # per-well metric computation, unit-agnostic (mm or px, see glossary above)
   stats.py                  # group summaries + between-group tests
   plots.py                  # boxplots and activity-over-time plots
-  cli.py                    # `python -m daniovision_pipeline.cli ...` (raw_export_parser-based pipeline)
+  cli.py                    # `python -m daniovision_pipeline.cli --trk-dir ... | --raw-dir ...`
 example_data/
   generate_example_data.py  # writes synthetic demo raw-data CSVs
 ```

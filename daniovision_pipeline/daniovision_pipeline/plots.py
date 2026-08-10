@@ -48,9 +48,15 @@ def plot_all_metric_boxplots(summary_df: pd.DataFrame, outdir: str | Path) -> li
 
 
 def plot_binned_activity(binned_df: pd.DataFrame, outpath: str | Path) -> None:
+    dist_cols = [c for c in binned_df.columns if c.startswith("distance_")]
+    if not dist_cols:
+        return
+    dist_col = dist_cols[0]
+    unit = dist_col.removeprefix("distance_")
+
     fig, ax = plt.subplots(figsize=(8, 4))
     for group, sub in binned_df.groupby("group"):
-        agg = sub.groupby("bin_start_s")["distance_mm"].agg(["mean", "sem"])
+        agg = sub.groupby("bin_start_s")[dist_col].agg(["mean", "sem"])
         ax.plot(agg.index / 60.0, agg["mean"], label=str(group))
         ax.fill_between(
             agg.index / 60.0,
@@ -59,7 +65,7 @@ def plot_binned_activity(binned_df: pd.DataFrame, outpath: str | Path) -> None:
             alpha=0.2,
         )
     ax.set_xlabel("Time (min)")
-    ax.set_ylabel("Distance moved per bin (mm)")
+    ax.set_ylabel(f"Distance moved per bin ({unit})")
     ax.set_title("Activity over time by group")
     ax.legend()
     fig.tight_layout()

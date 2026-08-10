@@ -32,14 +32,21 @@ Record (58 bytes, little-endian, no alignment padding):
    50  int32     Enter Zone Id     -1 = none
    54  int32     Hidden Zone Id    -1 = none
 
-A frame with no detected subject is written as all-fields = -1.
+A frame with no detected subject is written as all-fields = -1. This is
+supposed to always line up with MergeState == -1, but is not guaranteed to:
+across a full 24-arena plate, one filtered file had 2 (of 75001) frames
+where MergeState read 0 but position/area were still -1. Treat the field
+values themselves, not MergeState, as the authoritative "no sample" signal
+-- see _valid_mask().
 
 IMPORTANT — this file holds RAW detection output. EthoVision's own export is
 (a) calibrated to cm, (b) linearly interpolated across missing samples, and
 (c) smoothed by the track-smoothing profile in Detection Settings. On the
 validation dataset, total distance moved computed from the raw coordinates was
 4.27x the value EthoVision exported. Do not compare raw-derived distance or
-velocity against EthoVision-derived numbers. See --smooth and the README.
+velocity against EthoVision-derived numbers. See --smooth and the README --
+and see `compare`/compare_tracks() if you have the paired
+FilteredTrackFile*.btn, which already carries EthoVision's own smoothing.
 
 Usage:
   python ethovision_trk.py info    FILE.trk
@@ -47,6 +54,7 @@ Usage:
                                             [--interpolate] [--smooth N]
   python ethovision_trk.py calibrate FILE.trk --export raw_export.xlsx --sheet 1
   python ethovision_trk.py validate  FILE.trk --export raw_export.xlsx --sheet 1
+  python ethovision_trk.py compare   raw.trk filtered.btn
 """
 
 from __future__ import annotations
@@ -106,6 +114,21 @@ class TrkFormatError(Exception):
     """The file does not match the validated 58-byte-record layout."""
 
 
+def _valid_mask(records: np.ndarray) -> np.ndarray:
+    """Frames with an actual detected/filled position.
+
+    Per the format's own convention (see module docstring: "A frame with no
+    detected subject is written as all-fields = -1"), MergeState == -1 is
+    supposed to be the authoritative "no sample" flag. On a full 24-arena
+    plate, one filtered file had 2 out of 75001 frames where MergeState read
+    0 (normal) but X/Y/Z/Area/ChangedArea were all still -1 -- i.e. the two
+    signals disagreed. Treating the field values themselves as authoritative
+    (not just MergeState) is what the documented convention actually says,
+    and is safer than trusting a flag that's been observed to be wrong.
+    """
+    return (records["merge_state"] != -1) & (records["x"] != -1.0)
+
+
 @dataclass
 class TrkFile:
     path: str
@@ -119,8 +142,8 @@ class TrkFile:
 
     @property
     def missing(self) -> np.ndarray:
-        """Boolean mask of frames where no subject was detected."""
-        return self.records["merge_state"] == -1
+        """Boolean mask of frames with no usable position (see _valid_mask)."""
+        return ~_valid_mask(self.records)
 
     @property
     def time_s(self) -> np.ndarray:
@@ -201,7 +224,7 @@ def read_trk(path: str, load_records: bool = True) -> TrkFile:
 def _sanity_check(trk: TrkFile) -> None:
     """Cheap structural checks that catch a misaligned parse immediately."""
     r = trk.records
-    ok = r["merge_state"] != -1
+    ok = _valid_mask(r)
     if ok.sum() == 0:
         raise TrkFormatError(f"{trk.path}: every frame reads as missing")
     bad_merge = ~np.isin(r["merge_state"], (-1, 0, 1, 2, 3))
@@ -323,7 +346,7 @@ def calibrate(trk: TrkFile, xlsx_path: str, sheet_index: int = 1):
             "these are not the same track"
         )
     r = trk.records
-    ok = (r["merge_state"] != -1) & np.isfinite(Ae)
+    ok = _valid_mask(r) & np.isfinite(Ae)
     ratio = Ae[ok] / r["area"][ok].astype(float)
     scale = float(np.sqrt(np.median(ratio)))
     x0 = float(np.median(Xe[ok] - scale * r["x"][ok]))
@@ -346,7 +369,7 @@ def validate_against_export(trk: TrkFile, xlsx_path: str, sheet_index: int = 1,
     Xe, Ye, Ae, ACe, ELe, DMe = (cols["C"], cols["D"], cols["E"],
                                  cols["F"], cols["G"], cols["H"])
     r = trk.records
-    ok = (r["merge_state"] != -1)
+    ok = _valid_mask(r)
 
     def relerr(exp, raw, k=1.0):
         m = ok & np.isfinite(exp)
@@ -399,8 +422,8 @@ def compare_tracks(raw: TrkFile, filt: TrkFile) -> dict:
             f"{filt.n_samples} -- these are probably not a matched pair"
         )
     rr, fr = raw.records, filt.records
-    ok_raw = rr["merge_state"] != -1
-    ok_filt = fr["merge_state"] != -1
+    ok_raw = _valid_mask(rr)
+    ok_filt = _valid_mask(fr)
     both_ok = ok_raw & ok_filt
 
     area_diff = np.abs(fr["area"][both_ok].astype(float) - rr["area"][both_ok].astype(float))
