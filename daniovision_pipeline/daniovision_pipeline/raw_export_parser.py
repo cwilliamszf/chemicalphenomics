@@ -1,24 +1,28 @@
 """Parse EthoVision / DanioVision "Raw data" per-track exports (CSV or Excel).
 
-Why this instead of the .trk files
------------------------------------
-The ``.trk`` files inside an EthoVision project's raw data folder
-(``Track_filet0000a0004o0000_0001.trk``) are the software's internal,
-undocumented binary track database, not an interchange format. Inspecting
-the samples confirms they DO contain a full per-frame schema (SubjectId,
-StartTime, X/Y/Z Coordinate, Area, ChangedArea, Elongation, MergeState,
-Enter/Hidden Zone Id) but the numeric payload is packed in a proprietary,
-publicly undocumented layout -- there is no way to reverse engineer the
-byte layout with certainty from samples alone, and guessing wrong would
-silently produce plausible-looking but wrong distance/velocity numbers.
-See ``trk_probe.py`` for what can be safely read from these files.
+Relationship to ``ethovision_trk.py``
+--------------------------------------
+``ethovision_trk.py`` now reads the raw ``.trk`` files directly (58-byte
+fixed records of X/Y/Z/Area/ChangedArea/Elongation/MergeState/zone IDs --
+see its docstring for the full layout and validation evidence). Two reasons
+you may still want an official "Raw data" export and this parser:
 
-The safe, accurate, and officially supported path is EthoVision's own
-"Export > Raw data" feature (per-arena Excel/CSV), which is what this
-module reads. In EthoVision/DanioVision: Analysis tab -> Statistics ->
-pick "Raw data" as export type -> select one track per arena -> Export.
-That produces one file per well with a small property header followed by
-a per-frame data table -- exactly what feeds this parser.
+1. **Calibration.** The .trk file stores coordinates in raw image pixels
+   with no physical scale or origin. ``ethovision_trk.py calibrate`` and
+   ``validate`` recover cm-per-pixel and the arena origin from one export,
+   which you then reuse for all arenas from the same camera setup.
+2. **Ground truth for distance/velocity.** The .trk file holds unsmoothed,
+   uninterpolated raw detections. EthoVision's own export has already been
+   interpolated across missing samples and smoothed per your Detection
+   Settings profile; on the dataset ``ethovision_trk.py``'s author validated
+   against, raw-derived total distance was 4.27x the exported value.
+   ``ethovision_trk.py convert --interpolate --smooth N`` approximates this,
+   but if exact agreement with EthoVision's own numbers matters, export.
+
+In EthoVision/DanioVision: Analysis tab -> Statistics -> pick "Raw data" as
+export type -> select one track per arena -> Export. That produces one file
+per well with a small property header followed by a per-frame data table --
+exactly what feeds this parser.
 """
 
 from __future__ import annotations

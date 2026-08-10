@@ -8,24 +8,63 @@ over time e.g. for light/dark comparisons) -- in the spirit of
 well->group->metrics->stats workflow, adapted for Noldus
 EthoVision/DanioVision output.
 
-## Important: input format
+## Reading raw `.trk` files directly
 
-**This pipeline reads EthoVision's "Raw data" export (CSV/Excel), not the
-internal `.trk` files.**
+`daniovision_pipeline/ethovision_trk.py` reads DanioVision/EthoVision's
+internal per-arena `.trk` files (named like
+`Track_filet0000a0004o0000_0001.trk`) directly, without needing an
+EthoVision export. It reverse engineers a fixed 58-byte-per-frame record
+(X/Y/Z Coordinate, Area, ChangedArea, Elongation, MergeState, Enter/Hidden
+Zone Id) after a header block that names those fields in UTF-16 text -- see
+the module docstring for the full byte layout.
 
-The `.trk` files inside a DanioVision/EthoVision project's raw data folder
-(named like `Track_filet0000a0004o0000_0001.trk`) are the software's
-internal, undocumented binary track database. Inspecting real sample files
-confirms they do contain a full per-frame schema -- a header block literally
-names the fields `SubjectId`, `StartTime`, `X/Y/Z Coordinate`, `Area`,
-`ChangedArea`, `Elongation`, `MergeState`, `Enter/Hidden Zone Id` -- but the
-numeric payload after that header is packed in a proprietary layout that
-isn't publicly documented. Guessing the byte layout from samples alone risks
-silently producing plausible-looking but *wrong* distance/velocity numbers,
-which isn't an acceptable risk for a data pipeline feeding real analysis.
-`daniovision_pipeline/trk_probe.py` can safely read the safe parts of these
-files (field names present, trial start time, file size) for sanity-checking
-a raw data folder, but it deliberately does not decode trajectories.
+This has been validated against the 5 sample arenas in this project two
+independent ways: its own built-in structural sanity checks (MergeState only
+takes valid states, Area is an integral pixel count, Elongation falls in
+`[0, 1]`) pass on all 5 files, and the recovered per-arena X-pixel ranges
+are cleanly non-overlapping and evenly spaced (arena 0: 24-184px, arena 1:
+232-393px, arena 2: 440-597px, arena 3: 647-810px, arena 4: 855-1017px, all
+sharing the same 81-245px Y range) -- exactly what 5 wells side by side in
+one row of a plate should look like. That structure would not appear from a
+misaligned parse.
+
+```bash
+python daniovision_pipeline/ethovision_trk.py info FILE.trk
+python daniovision_pipeline/ethovision_trk.py convert FILE.trk -o out.csv [--interpolate] [--smooth 11]
+```
+
+**Two things to know before trusting numbers derived from this:**
+
+1. **Units are raw image pixels, with no physical scale**, unless you
+   calibrate. If you have (or can pull) one EthoVision "Raw data" export for
+   the same project, run `calibrate`/`validate` (below) to recover cm-per-
+   pixel and an origin, then pass `--scale`/`--x0`/`--y0` to `convert` to get
+   real cm coordinates. Without calibration, distances/velocities are only
+   meaningful as *relative* comparisons between wells/groups in the same
+   recording (same camera, same frame) -- not as absolute figures.
+2. **This is raw, unsmoothed, non-interpolated detector output.** EthoVision's
+   own export has already linearly interpolated missing samples and applied
+   your Detection Settings' track smoothing. On the dataset this script's
+   author validated against, distance moved computed from raw coordinates
+   was 4.27x EthoVision's own exported value. `--interpolate` matches
+   EthoVision's gap handling; `--smooth N` is a tricube local-linear
+   approximation of its smoother, not an exact match. Do not directly compare
+   raw- or approximately-smoothed-derived distance/velocity numbers against
+   numbers EthoVision itself reported, or across pipelines that differ in
+   whether/how they smooth.
+
+```bash
+python daniovision_pipeline/ethovision_trk.py calibrate FILE.trk --export raw_export.xlsx --sheet 1
+python daniovision_pipeline/ethovision_trk.py validate  FILE.trk --export raw_export.xlsx --sheet 1
+```
+
+If you don't have (and can't get) a reference export, `raw_export_parser.py`
+below still reads EthoVision's own export directly for the metrics pipeline
+-- calibrated, interpolated, and smoothed already, at the cost of needing to
+export every well by hand instead of pointing the pipeline at the raw data
+folder.
+
+## Alternative: EthoVision's own "Raw data" export
 
 The safe, accurate, officially supported path is EthoVision's own raw data
 export:
@@ -42,12 +81,16 @@ data table with columns such as `Trial time`, `X center`, `Y center`,
 `Distance moved`, `Velocity`, `Movement`, and (if you used a light/dark
 protocol) a light/stimulus state column -- exactly what this pipeline reads.
 
-### The filename -> well mapping problem
+## The filename -> well mapping problem
 
 The `a####` arena index encoded in `.trk` filenames (and often echoed in raw
 data export filenames as "Arena N") reflects the order arenas were drawn in
 that project's Trial Setup grid. **There is no universal public standard for
 this** -- it's specific to how your Trial Setup arena grid was configured.
+The X-pixel-range evidence above is a good way to check your own files: run
+`ethovision_trk.py info` on each arena and confirm the X ranges step through
+in the order you expect for your plate's physical layout (and that Y ranges
+group by row).
 
 `config/plate_layout_24well.csv` ships a row-major default for a 4-row x
 6-column plate (arena 0 = A1, arena 1 = A2, ... arena 5 = A6, arena 6 = B1,
@@ -130,12 +173,13 @@ config/
   groups_template.csv       # well_id -> group (copy and fill in per experiment)
 daniovision_pipeline/
   well_mapping.py           # filename -> arena -> well -> group resolution
+  ethovision_trk.py         # reads .trk files directly: info / convert / calibrate / validate
   raw_export_parser.py      # reads EthoVision "Raw data" CSV/Excel exports
-  trk_probe.py              # safe, metadata-only .trk inspection (no trajectory decoding)
-  metrics.py                # per-well metric computation
+  trk_probe.py              # minimal .trk sanity check predating ethovision_trk.py
+  metrics.py                # per-well metric computation (consumes raw_export_parser output)
   stats.py                  # group summaries + between-group tests
   plots.py                  # boxplots and activity-over-time plots
-  cli.py                    # `python -m daniovision_pipeline.cli ...`
+  cli.py                    # `python -m daniovision_pipeline.cli ...` (raw_export_parser-based pipeline)
 example_data/
   generate_example_data.py  # writes synthetic demo raw-data CSVs
 ```

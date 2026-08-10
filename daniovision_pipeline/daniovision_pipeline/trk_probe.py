@@ -1,14 +1,25 @@
-"""Safe, metadata-only inspection of raw EthoVision ``.trk`` files.
+"""Superseded by ``ethovision_trk.py`` for real analysis -- see below.
 
-This intentionally does NOT decode the per-frame numeric trajectory. The
-byte layout of the numeric payload is proprietary and undocumented; the
-schema block at the start of the file is plain enough to read reliably
-(it stores field names and a trial start timestamp as UTF-16 text), but
-guessing the binary layout of the data that follows would risk producing
-silently wrong position/distance/velocity numbers. Use this module for
-sanity-checking a raw data folder (file sizes match, same trial start
-time across arenas, expected fields present) -- not for analysis. For
-analysis, export "Raw data" from EthoVision and use ``raw_export_parser``.
+This module intentionally does NOT decode the per-frame numeric trajectory;
+it only reads the UTF-16 schema block (field names, trial start timestamp)
+that sits before the numeric payload. It predates ``ethovision_trk.py``,
+which reverse engineers and validates the full 58-byte-per-frame record
+layout (see its module docstring for the byte layout and the evidence: it
+was cross-checked against the manual header parse this project started
+with, its own internal structural sanity checks (MergeState/Area/Elongation
+ranges), and against the 5 sample arenas here, whose recovered X-pixel
+ranges are cleanly non-overlapping and evenly spaced -- exactly what 5
+side-by-side wells on one plate should look like).
+
+Use ``ethovision_trk.py info FILE.trk`` for what this module gives you, and
+``ethovision_trk.py convert`` to get an actual per-frame CSV. This module is
+kept around only as a minimal, dependency-light sanity check (do these files
+even look like EthoVision tracks, do several arenas share one trial). For
+analysis you also still have the option of EthoVision's own "Raw data"
+export via ``raw_export_parser`` -- useful for calibrating
+``ethovision_trk.py``'s pixel coordinates to real-world cm/mm (its
+``calibrate``/``validate`` subcommands) since the .trk file itself has no
+physical scale.
 """
 
 from __future__ import annotations
