@@ -242,21 +242,26 @@ The whole-trial output always runs too; periods are additional, not a
 replacement.
 
 Copy `config/periods_template.csv` and edit it, e.g. for a 10-minute light
-phase followed by a 40-minute dark phase (already provided as
-`config/periods_light10_dark40.csv`):
+phase, a 5-minute startle phase, then a 35-minute dark phase (already
+provided as `config/periods_light10_startle5_dark35.csv` -- this is the
+real plate's protocol):
 
 ```csv
 period,start_s,end_s
-light,0,600
-dark,600,3000
+Light phase,0,600
+Startle,600,900
+Dark phase,900,3000
 ```
+
+(a simpler 2-phase light/dark-only example is also provided as
+`config/periods_light10_dark40.csv`, if that matches your protocol instead)
 
 ```bash
 python -m daniovision_pipeline.cli \
   --trk-dir /path/to/trk_folder \
   --groups /path/to/your_groups.csv \
   --outdir /path/to/results \
-  --periods config/periods_light10_dark40.csv
+  --periods config/periods_light10_startle5_dark35.csv
 ```
 
 Each period gets its own subfolder, with the same files as the top-level
@@ -269,6 +274,13 @@ is resolved once from the *whole* trial and reused for every period, so
 mobile/immobile fractions stay comparable across periods instead of each
 period silently getting its own cutoff.
 
+The whole-trial `activity_over_time.svg` also gets a dashed vertical line
+at every period boundary, with each span labeled along the top -- so you
+can see e.g. exactly where "Startle" sits inside the full activity trace,
+not just as an isolated 5-minute plot in its own subfolder. Individual
+per-period plots aren't annotated this way (nothing else to mark once a
+plot is already sliced to one period).
+
 For a side-by-side view without opening every subfolder, `--periods` also
 writes three combined files at `<outdir>` stacking the whole trial and
 every period together with a `period` column distinguishing rows:
@@ -279,7 +291,7 @@ numbers as the individual per-period files (e.g. a well's `light` +
 convenience view, not a separate computation.
 
 On the real 24-well plate this surfaced a textbook larval zebrafish
-dark-flash response in the `dark` period's `activity_over_time.png`: a burst
+dark-flash response in the `dark` period's `activity_over_time.svg`: a burst
 of activity right at lights-off that decays over the next ~15-20 minutes,
 visible in both groups.
 
@@ -316,7 +328,7 @@ Written to `--outdir`:
 | `per_well_time_binned_activity.csv` | distance moved per time bin, per well |
 | `group_summary.csv` | mean / SEM / N per metric per group |
 | `group_comparisons.csv` | omnibus test (Welch's t-test or one-way ANOVA) and pairwise p-values per metric, sorted by p-value |
-| `plots/*.png` | boxplot (with individual wells overlaid) per metric by group, plus `activity_over_time.png` |
+| `plots/*.svg` | boxplot (with individual wells overlaid) per metric by group, plus `activity_over_time.svg` (dashed lines + labels mark `--periods` boundaries on the whole-trial plot) |
 | `periods/<name>/...` | *(only with `--periods`)* the same five items above, computed on just that period's time window |
 | `all_periods_per_well_metrics.csv`, `all_periods_group_summary.csv`, `all_periods_group_comparisons.csv` | *(only with `--periods`)* whole trial + every period stacked together with a `period` column, for a side-by-side view |
 
@@ -339,7 +351,8 @@ config/
   plate_layout_24well.csv   # arena_index -> well_id (edit if your grid order differs)
   groups_template.csv       # well_id -> group (copy and fill in per experiment)
   periods_template.csv      # period,start_s,end_s (copy and edit per protocol)
-  periods_light10_dark40.csv  # ready-made: 10 min light + 40 min dark
+  periods_light10_startle5_dark35.csv  # ready-made: this plate's protocol (light/startle/dark)
+  periods_light10_dark40.csv  # ready-made: simpler 2-phase light/dark-only example
 daniovision_pipeline/
   well_mapping.py           # filename -> arena -> well -> group resolution
   ethovision_trk.py         # reads .trk/.btn files directly: info / convert / calibrate / validate / compare

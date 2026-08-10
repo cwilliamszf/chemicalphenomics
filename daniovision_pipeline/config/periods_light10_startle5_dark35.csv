@@ -1,0 +1,4 @@
+period,start_s,end_s
+Light phase,0,600
+Startle,600,900
+Dark phase,900,3000

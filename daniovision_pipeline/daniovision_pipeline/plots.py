@@ -1,8 +1,12 @@
-"""Plots comparing groups: per-metric boxplots and time-binned activity traces."""
+"""Plots comparing groups: per-metric boxplots and time-binned activity traces.
+
+All figures are saved as SVG (vector, not rasterized) rather than PNG.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib
 
@@ -12,6 +16,9 @@ import numpy as np
 import pandas as pd
 
 from .stats import metric_columns
+
+if TYPE_CHECKING:
+    from .periods import Period
 
 
 def plot_metric_boxplot(summary_df: pd.DataFrame, metric: str, outpath: str | Path) -> None:
@@ -30,7 +37,7 @@ def plot_metric_boxplot(summary_df: pd.DataFrame, metric: str, outpath: str | Pa
     ax.set_ylabel(metric)
     ax.set_title(metric)
     fig.tight_layout()
-    fig.savefig(outpath, dpi=150)
+    fig.savefig(outpath)
     plt.close(fig)
 
 
@@ -41,13 +48,25 @@ def plot_all_metric_boxplots(summary_df: pd.DataFrame, outdir: str | Path) -> li
     for metric in metric_columns(summary_df):
         if not pd.api.types.is_numeric_dtype(summary_df[metric]):
             continue
-        outpath = outdir / f"{metric}.png"
+        outpath = outdir / f"{metric}.svg"
         plot_metric_boxplot(summary_df, metric, outpath)
         paths.append(outpath)
     return paths
 
 
-def plot_binned_activity(binned_df: pd.DataFrame, outpath: str | Path) -> None:
+def plot_binned_activity(
+    binned_df: pd.DataFrame,
+    outpath: str | Path,
+    periods: list[Period] | None = None,
+) -> None:
+    """Mean +/- SEM distance-per-bin over time, one line per group.
+
+    If `periods` is given, draws a dashed vertical line at every period
+    boundary and labels each span along the top of the plot -- e.g. to show
+    where a light phase ends and a dark phase begins on the whole-trial
+    activity plot. Not meant for a plot that's already been sliced to a
+    single period (nothing to mark).
+    """
     dist_cols = [c for c in binned_df.columns if c.startswith("distance_")]
     if not dist_cols:
         return
@@ -68,6 +87,25 @@ def plot_binned_activity(binned_df: pd.DataFrame, outpath: str | Path) -> None:
     ax.set_ylabel(f"Distance moved per bin ({unit})")
     ax.set_title("Activity over time by group")
     ax.legend()
+
+    if periods:
+        xmin, xmax = ax.get_xlim()
+        boundaries = set()
+        for period in periods:
+            for start, end in period.intervals:
+                boundaries.add(start / 60.0)
+                boundaries.add(end / 60.0)
+        for b in sorted(boundaries):
+            if xmin < b < xmax:
+                ax.axvline(b, color="0.4", linestyle="--", linewidth=1, alpha=0.8, zorder=0)
+        ymax = ax.get_ylim()[1]
+        for period in periods:
+            for start, end in period.intervals:
+                mid = (start / 60.0 + end / 60.0) / 2.0
+                if xmin <= mid <= xmax:
+                    ax.text(mid, ymax, period.name, ha="center", va="bottom", fontsize=9, color="0.3")
+        ax.set_ylim(top=ymax * 1.08)  # headroom for the period labels
+
     fig.tight_layout()
-    fig.savefig(outpath, dpi=150)
+    fig.savefig(outpath)
     plt.close(fig)

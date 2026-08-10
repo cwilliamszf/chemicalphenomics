@@ -23,7 +23,7 @@ import pandas as pd
 from . import metrics as metrics_mod
 from . import plots as plots_mod
 from . import stats as stats_mod
-from .periods import load_periods, slice_to_period
+from .periods import Period, load_periods, slice_to_period
 from .raw_export_parser import load_raw_track
 from .trk_loader import load_trk_track
 from .well_mapping import PlateLayout, build_file_well_group_table, load_groups, parse_arena_index_from_filename
@@ -75,6 +75,7 @@ def analyze(
     well_group: dict[str, str],
     cfg: metrics_mod.MetricsConfig,
     outdir: Path,
+    period_markers: list[Period] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Metrics -> per-well table -> group stats -> plots, for one set of tracks.
 
@@ -83,6 +84,10 @@ def analyze(
     slicing is identical. Returns (summary_df, group_summary_df,
     comparisons_df) so the caller can build a combined view across periods
     on top of the individual files this always writes.
+
+    `period_markers`, when given, draws period-boundary lines/labels on the
+    activity-over-time plot (meant for the whole-trial call only -- a
+    single period's own plot has nothing else to mark).
     """
     outdir.mkdir(parents=True, exist_ok=True)
     summary_df, binned_df = metrics_mod.compute_all_wells(tracks_by_well, well_group, cfg)
@@ -100,7 +105,9 @@ def analyze(
     plot_dir = outdir / "plots"
     plots_mod.plot_all_metric_boxplots(summary_df, plot_dir)
     if not binned_df.empty:
-        plots_mod.plot_binned_activity(binned_df, plot_dir / "activity_over_time.png")
+        plots_mod.plot_binned_activity(
+            binned_df, plot_dir / "activity_over_time.svg", periods=period_markers
+        )
     print(f"Wrote plots -> {plot_dir}")
 
     return summary_df, group_summary_df, comparisons_df
@@ -182,12 +189,15 @@ def run(
     if run_info_lines:
         (outdir / "run_info.txt").write_text("\n".join(run_info_lines) + "\n")
 
+    periods = load_periods(periods_csv) if periods_csv is not None else None
+
     print("--- whole trial ---")
-    summary_df, group_summary_df, comparisons_df = analyze(tracks_by_well, well_group, cfg, outdir)
+    summary_df, group_summary_df, comparisons_df = analyze(
+        tracks_by_well, well_group, cfg, outdir, period_markers=periods
+    )
     per_period_results = [("whole_trial", summary_df, group_summary_df, comparisons_df)]
 
-    if periods_csv is not None:
-        periods = load_periods(periods_csv)
+    if periods is not None:
         for period in periods:
             print(f"--- period: {period.name} ({period.intervals}) ---")
             period_tracks = {
