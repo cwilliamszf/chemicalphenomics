@@ -198,6 +198,36 @@ the README describes the same options and output either interface produces
   terminal, the per-well metrics table, the activity-over-time plot inline,
   and a button to download every output file as a single .zip.
 
+Below that single-plate section, the GUI also has an **"Aggregate across
+plates/days"** section -- the GUI equivalent of `aggregate_cli.py` (see
+"Aggregating wells of the same condition across plates/days" further down).
+
+**Important: this section does not process raw data.** Every row you add
+must already be the output folder of a *completed* run -- either `cli.py`,
+or the "Run analysis" step above it on the same page. It only reads the
+`per_well_metrics.csv` / `per_well_time_binned_activity.csv` (and
+`periods/` subfolders) that run already wrote; it cannot read `.trk`/`.btn`
+or EthoVision export files directly, and clicking "Run aggregation" will
+not process a plate you haven't run yet -- process each plate first (with
+this GUI's own Run step, or the CLI), *then* come back to this section to
+pool them.
+
+- **Plates to aggregate**: an editable table (`plate_id`, output folder,
+  optional date), with a folder-picker "Add plate" shortcut above it
+  (auto-fills `plate_id` from the folder name -- edit it if you want
+  something else) or type/paste rows directly into the table.
+- **Aggregated output folder** and an optional **periods CSV** (only used
+  to draw boundary lines on the pooled whole-trial activity plot -- see the
+  aggregation section below for why period-level aggregation itself doesn't
+  need this).
+- **Run aggregation**: validates the table first (at least one plate, no
+  duplicate `plate_id`s, every folder must actually exist) with the same
+  errors `aggregate_cli.py` would raise, then shows the aggregation log,
+  the pooled per-well table, the pooled activity-over-time plot, the
+  by-plate batch-effect diagnostic plot, and a .zip download -- and
+  surfaces the pixel-vs-mm unit-consistency warning (see below) as a
+  visible on-page warning box, not just a line buried in the log.
+
 If you'd rather script it (batch runs, no browser), use the CLI directly --
 same options, see below.
 
@@ -361,7 +391,10 @@ own well -> group resolution, own metrics, own QC, own output folder. Once
 you have two or more of those, `aggregate_cli.py` combines their *already-
 computed* outputs (not the raw `.trk`/export files) into pooled group
 comparisons and a pooled activity-over-time trace, so "group" pools wells
-across plates instead of being scoped to one plate at a time.
+across plates instead of being scoped to one plate at a time. (The GUI's
+"Aggregate across plates/days" section, described above, does the same
+thing -- it's the exact same rule there too: point it at folders `cli.py`
+has already finished, it will not process raw data for you.)
 
 ```bash
 # 1. Run each plate/day exactly as normal, own --outdir each:

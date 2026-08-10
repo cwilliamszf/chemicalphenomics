@@ -26,6 +26,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from daniovision_pipeline import aggregate as aggregate_mod
 from daniovision_pipeline import cli as cli_mod
 from daniovision_pipeline.well_mapping import PlateLayout
 
@@ -317,3 +318,186 @@ if st.session_state.get("last_outdir"):
         zip_path = shutil.make_archive(str(zip_base), "zip", root_dir=outdir_path)
         with open(zip_path, "rb") as f:
             st.download_button("Download all results (.zip)", f, file_name=Path(zip_path).name)
+
+
+# --------------------------------------------------------------------------
+# Aggregate across plates/days
+# --------------------------------------------------------------------------
+st.divider()
+st.title("Aggregate across plates/days")
+st.caption(
+    "Pool wells of the same group/condition across multiple plates. **Every folder listed "
+    "below must already be the output of a completed run** -- either `cli.py`, or the 'Run "
+    "analysis' step above. This section does not read raw .trk/.btn/export files and will not "
+    "process a plate for you; it only combines per_well_metrics.csv / "
+    "per_well_time_binned_activity.csv (and periods/ subfolders, if used) that a prior run "
+    "already wrote. Process each plate first, then come back here to pool them."
+)
+
+
+def _default_agg_df() -> pd.DataFrame:
+    return pd.DataFrame({"plate_id": [], "outdir": [], "date": []}, dtype="object")
+
+
+if "agg_plates_df" not in st.session_state:
+    st.session_state.agg_plates_df = _default_agg_df()
+
+st.subheader("Plates to aggregate")
+add_col1, add_col2, add_col3, add_col4 = st.columns([4, 1, 2, 1])
+with add_col1:
+    new_plate_dir = st.text_input("Add a plate's already-processed output folder", key="agg_new_dir_text")
+with add_col2:
+    st.write("")
+    if _TKINTER_AVAILABLE and st.button("Browse...", key="agg_new_dir_browse"):
+        root = _tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        chosen = _filedialog.askdirectory()
+        root.destroy()
+        if chosen:
+            st.session_state["agg_new_dir_text"] = chosen
+            st.rerun()
+with add_col3:
+    new_plate_date = st.text_input("Date (optional)", key="agg_new_date_text", placeholder="2026-07-28")
+with add_col4:
+    st.write("")
+    if st.button("Add plate", key="agg_add_btn"):
+        folder = st.session_state.get("agg_new_dir_text", "").strip()
+        if folder:
+            new_row = pd.DataFrame(
+                {
+                    "plate_id": [Path(folder).name or folder],
+                    "outdir": [folder],
+                    "date": [st.session_state.get("agg_new_date_text", "").strip() or None],
+                }
+            )
+            st.session_state.agg_plates_df = pd.concat(
+                [st.session_state.agg_plates_df, new_row], ignore_index=True
+            )
+            st.session_state["agg_new_dir_text"] = ""
+            st.session_state["agg_new_date_text"] = ""
+            st.rerun()
+
+st.caption(
+    "Or type/paste directly into the table below (add/delete rows with the icons on the "
+    "right) -- the button above is just a shortcut for browsing to a folder."
+)
+agg_plates_df = st.data_editor(
+    st.session_state.agg_plates_df,
+    num_rows="dynamic",
+    key="agg_plates_editor",
+    width="stretch",
+    column_config={
+        "plate_id": st.column_config.TextColumn("Plate ID", help="Must be unique across rows"),
+        "outdir": st.column_config.TextColumn("Output folder (already processed)"),
+        "date": st.column_config.TextColumn(
+            "Date (optional)", help="Any format; used only for display/sort order, not computation"
+        ),
+    },
+)
+st.session_state.agg_plates_df = agg_plates_df
+
+agg_col1, agg_col2 = st.columns(2)
+agg_outdir = agg_col1.text_input("Aggregated output folder", key="agg_outdir_text")
+agg_periods_path = agg_col2.text_input(
+    "Periods CSV for boundary markers (optional)",
+    key="agg_periods_text",
+    help="Same shape as the Periods table above, as a CSV (period,start_s,end_s). Only draws "
+         "boundary lines on the pooled whole-trial activity plot -- period-level aggregation "
+         "itself is auto-discovered from each plate's own periods/<name>/ folders regardless.",
+)
+
+agg_run_clicked = st.button("Run aggregation", type="primary", key="agg_run_btn")
+
+if agg_run_clicked:
+    agg_errors = []
+    clean_plates = agg_plates_df.dropna(subset=["plate_id", "outdir"])
+    clean_plates = clean_plates[clean_plates["plate_id"].astype(str).str.strip() != ""]
+    clean_plates = clean_plates[clean_plates["outdir"].astype(str).str.strip() != ""]
+    if len(clean_plates) < 1:
+        agg_errors.append("Add at least one plate's already-processed output folder.")
+    if clean_plates["plate_id"].duplicated().any():
+        dupes = clean_plates.loc[clean_plates["plate_id"].duplicated(), "plate_id"].tolist()
+        agg_errors.append(f"Duplicate plate_id(s): {', '.join(dupes)}")
+    missing_dirs = [row["outdir"] for _, row in clean_plates.iterrows() if not Path(row["outdir"]).is_dir()]
+    if missing_dirs:
+        agg_errors.append(
+            f"Folder(s) not found: {', '.join(missing_dirs)}. Each row must point at a "
+            "folder that cli.py (or the Run step above) already wrote results into."
+        )
+    if not agg_outdir:
+        agg_errors.append("Set an aggregated output folder.")
+    if agg_periods_path and not Path(agg_periods_path).is_file():
+        agg_errors.append(f"Periods CSV not found: {agg_periods_path}")
+
+    if agg_errors:
+        for e in agg_errors:
+            st.error(e)
+    else:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            manifest_csv = tmp / "manifest.csv"
+            clean_plates.to_csv(manifest_csv, index=False)
+
+            agg_log = io.StringIO()
+            agg_outdir_path = Path(agg_outdir)
+            try:
+                with st.spinner("Aggregating..."):
+                    with contextlib.redirect_stdout(agg_log):
+                        aggregate_mod.aggregate(
+                            manifest_csv=manifest_csv,
+                            outdir=agg_outdir_path,
+                            periods_csv=Path(agg_periods_path) if agg_periods_path else None,
+                        )
+                st.session_state.last_agg_outdir = str(agg_outdir_path)
+                st.session_state.last_agg_log = agg_log.getvalue()
+                st.success(f"Done -> {agg_outdir_path}")
+            except Exception as e:
+                st.error(f"{type(e).__name__}: {e}")
+                with st.expander("Full error"):
+                    st.code(traceback.format_exc())
+                st.session_state.last_agg_log = agg_log.getvalue()
+
+# --------------------------------------------------------------------------
+# Aggregation results
+# --------------------------------------------------------------------------
+if st.session_state.get("last_agg_outdir"):
+    agg_outdir_path = Path(st.session_state["last_agg_outdir"])
+    if agg_outdir_path.is_dir():
+        st.subheader("Aggregation results")
+        agg_log_text = st.session_state.get("last_agg_log", "")
+        with st.expander("Aggregation log"):
+            st.code(agg_log_text)
+
+        agg_run_info = agg_outdir_path / "aggregate_run_info.txt"
+        if agg_run_info.exists():
+            info_text = agg_run_info.read_text()
+            if "WARNING:" in agg_log_text:
+                st.warning(info_text)
+            else:
+                st.caption(info_text)
+
+        agg_per_well_csv = agg_outdir_path / "aggregated_per_well_metrics.csv"
+        if agg_per_well_csv.exists():
+            st.write("Aggregated per-well metrics")
+            st.dataframe(pd.read_csv(agg_per_well_csv), width="stretch")
+
+        agg_activity_svg = agg_outdir_path / "plots" / "activity_over_time.svg"
+        if agg_activity_svg.exists():
+            st.write("Pooled activity over time")
+            st.markdown(agg_activity_svg.read_text(), unsafe_allow_html=True)
+
+        agg_by_plate_svg = agg_outdir_path / "plots" / "activity_over_time_by_plate.svg"
+        if agg_by_plate_svg.exists():
+            st.write("Activity over time, by plate (batch-effect check)")
+            st.markdown(agg_by_plate_svg.read_text(), unsafe_allow_html=True)
+
+        agg_zip_base = agg_outdir_path.parent / (agg_outdir_path.name + "_agg_results")
+        agg_zip_path = shutil.make_archive(str(agg_zip_base), "zip", root_dir=agg_outdir_path)
+        with open(agg_zip_path, "rb") as f:
+            st.download_button(
+                "Download all aggregated results (.zip)",
+                f,
+                file_name=Path(agg_zip_path).name,
+                key="agg_zip_dl",
+            )
