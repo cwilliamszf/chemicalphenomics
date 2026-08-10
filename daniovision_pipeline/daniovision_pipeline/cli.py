@@ -75,12 +75,14 @@ def analyze(
     well_group: dict[str, str],
     cfg: metrics_mod.MetricsConfig,
     outdir: Path,
-) -> None:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Metrics -> per-well table -> group stats -> plots, for one set of tracks.
 
     Shared by the whole-trial run and each --periods window: a period is
     just a different (smaller) tracks_by_well, everything downstream of
-    slicing is identical.
+    slicing is identical. Returns (summary_df, group_summary_df,
+    comparisons_df) so the caller can build a combined view across periods
+    on top of the individual files this always writes.
     """
     outdir.mkdir(parents=True, exist_ok=True)
     summary_df, binned_df = metrics_mod.compute_all_wells(tracks_by_well, well_group, cfg)
@@ -100,6 +102,8 @@ def analyze(
     if not binned_df.empty:
         plots_mod.plot_binned_activity(binned_df, plot_dir / "activity_over_time.png")
     print(f"Wrote plots -> {plot_dir}")
+
+    return summary_df, group_summary_df, comparisons_df
 
 
 def run(
@@ -179,7 +183,8 @@ def run(
         (outdir / "run_info.txt").write_text("\n".join(run_info_lines) + "\n")
 
     print("--- whole trial ---")
-    analyze(tracks_by_well, well_group, cfg, outdir)
+    summary_df, group_summary_df, comparisons_df = analyze(tracks_by_well, well_group, cfg, outdir)
+    per_period_results = [("whole_trial", summary_df, group_summary_df, comparisons_df)]
 
     if periods_csv is not None:
         periods = load_periods(periods_csv)
@@ -191,7 +196,29 @@ def run(
             empty_wells = [w for w, t in period_tracks.items() if t.empty]
             if empty_wells:
                 print(f"  WARNING: no frames in this period for well(s): {', '.join(empty_wells)}")
-            analyze(period_tracks, well_group, cfg, outdir / "periods" / period.name)
+            period_results = analyze(period_tracks, well_group, cfg, outdir / "periods" / period.name)
+            per_period_results.append((period.name, *period_results))
+
+        # Combined views stacking the whole trial and every period together,
+        # in addition to (not instead of) each one's own files above.
+        def _combined(dfs_by_period: list[tuple[str, pd.DataFrame]]) -> pd.DataFrame:
+            frames = []
+            for period_name, df in dfs_by_period:
+                df = df.copy()
+                df.insert(0, "period", period_name)
+                frames.append(df)
+            return pd.concat(frames, ignore_index=True)
+
+        _combined([(n, s) for n, s, _, _ in per_period_results]).to_csv(
+            outdir / "all_periods_per_well_metrics.csv", index=False
+        )
+        _combined([(n, g) for n, _, g, _ in per_period_results]).to_csv(
+            outdir / "all_periods_group_summary.csv", index=False
+        )
+        _combined([(n, c) for n, _, _, c in per_period_results]).to_csv(
+            outdir / "all_periods_group_comparisons.csv", index=False
+        )
+        print(f"Wrote combined whole-trial + per-period views -> {outdir}/all_periods_*.csv")
 
 
 def main() -> None:
@@ -238,7 +265,9 @@ def main() -> None:
              "config/periods_template.csv) to additionally analyze separately, e.g. light/dark "
              "phases. Each period gets its own subfolder under <outdir>/periods/<name>/ with "
              "the same per_well_metrics.csv / group_summary.csv / group_comparisons.csv / plots "
-             "as the whole-trial output. The whole-trial analysis always runs regardless."
+             "as the whole-trial output (which always runs too, at <outdir> itself). Also writes "
+             "<outdir>/all_periods_*.csv stacking the whole trial and every period together "
+             "(a 'period' column distinguishes rows) for a side-by-side view."
     )
     args = parser.parse_args()
     run(args.raw_dir, args.trk_dir, args.plate_layout, args.groups, args.outdir,

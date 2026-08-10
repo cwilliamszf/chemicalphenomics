@@ -260,12 +260,23 @@ python -m daniovision_pipeline.cli \
 ```
 
 Each period gets its own subfolder, with the same files as the top-level
-output: `<outdir>/periods/<period_name>/{per_well_metrics,group_summary,
-group_comparisons}.csv` and `<outdir>/periods/<period_name>/plots/`. The
-mobility threshold (if auto-computed) is resolved once from the *whole*
-trial and reused for every period, so mobile/immobile fractions stay
-comparable across periods instead of each period silently getting its own
-cutoff.
+whole-trial output: `<outdir>/periods/<period_name>/{per_well_metrics,
+group_summary,group_comparisons}.csv` and
+`<outdir>/periods/<period_name>/plots/`. The whole-trial output at
+`<outdir>` itself always runs too, regardless of `--periods` -- periods are
+additional, never a replacement. The mobility threshold (if auto-computed)
+is resolved once from the *whole* trial and reused for every period, so
+mobile/immobile fractions stay comparable across periods instead of each
+period silently getting its own cutoff.
+
+For a side-by-side view without opening every subfolder, `--periods` also
+writes three combined files at `<outdir>` stacking the whole trial and
+every period together with a `period` column distinguishing rows:
+`all_periods_per_well_metrics.csv`, `all_periods_group_summary.csv`,
+`all_periods_group_comparisons.csv`. These summarize exactly the same
+numbers as the individual per-period files (e.g. a well's `light` +
+`dark` `total_distance_px` sums to its `whole_trial` value) -- they're a
+convenience view, not a separate computation.
 
 On the real 24-well plate this surfaced a textbook larval zebrafish
 dark-flash response in the `dark` period's `activity_over_time.png`: a burst
@@ -306,6 +317,8 @@ Written to `--outdir`:
 | `group_summary.csv` | mean / SEM / N per metric per group |
 | `group_comparisons.csv` | omnibus test (Welch's t-test or one-way ANOVA) and pairwise p-values per metric, sorted by p-value |
 | `plots/*.png` | boxplot (with individual wells overlaid) per metric by group, plus `activity_over_time.png` |
+| `periods/<name>/...` | *(only with `--periods`)* the same five items above, computed on just that period's time window |
+| `all_periods_per_well_metrics.csv`, `all_periods_group_summary.csv`, `all_periods_group_comparisons.csv` | *(only with `--periods`)* whole trial + every period stacked together with a `period` column, for a side-by-side view |
 
 ### Metrics glossary
 
