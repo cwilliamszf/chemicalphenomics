@@ -14,8 +14,8 @@ ethovision_trk.py convert). Output metric names carry whichever unit the
 input used (e.g. total_distance_mm vs total_distance_px) so pixel-derived
 numbers never get silently mislabeled as physical units.
 
-Mobility/bout metrics (pct_time_mobile, mobile_bout_count, etc.) come from
-one of two sources:
+Mobility/bout metrics (pct_time_mobile, mobile_bout_count,
+mean_mobile_bout_distance_<unit>, etc.) come from one of two sources:
 
 1. An EthoVision-derived `mobility_state` text column (from
    raw_export_parser.py's export reading) -- EthoVision's own Movement
@@ -132,28 +132,46 @@ def compute_pooled_mobility_threshold(
     return float(np.percentile(np.concatenate(pooled), percentile))
 
 
-def _bout_stats(mobile_bool: pd.Series, time_s: pd.Series) -> dict[str, float]:
-    """Count contiguous True/False runs and their mean durations."""
+def _bout_stats(
+    mobile_bool: pd.Series, time_s: pd.Series, distance: pd.Series | None = None
+) -> dict[str, float]:
+    """Count contiguous True/False runs, their mean durations, and (if `distance` is
+    given, in the same unit/frame alignment as mobile_bool) mean distance moved per bout.
+
+    "Bout" here follows this codebase's existing convention of treating mobile and
+    immobile runs symmetrically (mean_immobile_bout_distance should end up near zero by
+    construction -- a large value there is a sign the mobility threshold/classification
+    is off, not a real finding).
+    """
     valid = mobile_bool.notna()
     m = mobile_bool[valid].astype(bool).to_numpy()
     t = time_s[valid].to_numpy()
+    d = distance[valid].to_numpy() if distance is not None else None
     if len(m) < 2:
         return {
             "mobile_bout_count": np.nan,
             "mean_mobile_bout_duration_s": np.nan,
             "mean_immobile_bout_duration_s": np.nan,
+            "mean_mobile_bout_distance": np.nan,
+            "mean_immobile_bout_distance": np.nan,
         }
     change_points = np.where(np.diff(m.astype(int)) != 0)[0] + 1
     bounds = np.concatenate(([0], change_points, [len(m)]))
     mobile_durs, immobile_durs = [], []
+    mobile_dists, immobile_dists = [], []
     for start, end in zip(bounds[:-1], bounds[1:]):
         dur = t[end - 1] - t[start] if end > start else 0.0
-        (mobile_durs if m[start] else immobile_durs).append(dur)
+        durs, dists = (mobile_durs, mobile_dists) if m[start] else (immobile_durs, immobile_dists)
+        durs.append(dur)
+        if d is not None:
+            dists.append(float(np.nansum(d[start:end])))
     mobile_bout_count = len(mobile_durs)
     return {
         "mobile_bout_count": mobile_bout_count,
         "mean_mobile_bout_duration_s": float(np.mean(mobile_durs)) if mobile_durs else np.nan,
         "mean_immobile_bout_duration_s": float(np.mean(immobile_durs)) if immobile_durs else np.nan,
+        "mean_mobile_bout_distance": float(np.mean(mobile_dists)) if mobile_dists else np.nan,
+        "mean_immobile_bout_distance": float(np.mean(immobile_dists)) if immobile_dists else np.nan,
     }
 
 
@@ -228,11 +246,17 @@ def compute_well_metrics(track: pd.DataFrame, cfg: MetricsConfig | None = None) 
         else:
             out["pct_time_mobile"] = np.nan
             out["pct_time_immobile"] = np.nan
-        out.update(_bout_stats(mobile_bool, track["time_s"]))
+        dist_col = f"distance_{unit}" if unit is not None else None
+        dist_series = track[dist_col] if dist_col and dist_col in track else None
+        bout_stats = _bout_stats(mobile_bool, track["time_s"], dist_series)
     else:
         out["pct_time_mobile"] = np.nan
         out["pct_time_immobile"] = np.nan
-        out.update(_bout_stats(pd.Series(dtype=float), pd.Series(dtype=float)))
+        bout_stats = _bout_stats(pd.Series(dtype=float), pd.Series(dtype=float))
+
+    for key in ("mean_mobile_bout_distance", "mean_immobile_bout_distance"):
+        out[f"{key}_{unit}" if unit is not None else key] = bout_stats.pop(key)
+    out.update(bout_stats)
 
     out.update(_thigmotaxis(track, cfg, unit))
 
